@@ -1,0 +1,518 @@
+<html>
+<head>
+    <script src="Box2D.js"></script>
+    <script src="jquery.min.js"></script>
+    <script src="math.min.js"></script>
+    <script>
+        var FPS = 30;
+        var TARGET_SIZE = .5;
+        var MOVE_SPEED = 20;
+        var ROTATE_SPEED = 0.07;
+        var SCALE_SPEED = 1.04;
+        var MAX_SPEED = 0.85;
+
+        // Aliases
+        var b2Vec2 = Box2D.Common.Math.b2Vec2,
+            b2BodyDef = Box2D.Dynamics.b2BodyDef,
+            b2Body = Box2D.Dynamics.b2Body,
+            b2FixtureDef = Box2D.Dynamics.b2FixtureDef,
+            b2Fixture = Box2D.Dynamics.b2Fixture,
+            b2World = Box2D.Dynamics.b2World,
+            b2MassData = Box2D.Collision.Shapes.b2MassData,
+            b2PolygonShape = Box2D.Collision.Shapes.b2PolygonShape,
+            b2CircleShape = Box2D.Collision.Shapes.b2CircleShape,
+            b2DebugDraw = Box2D.Dynamics.b2DebugDraw;
+
+        function cloneVec(v) {
+            return new b2Vec2(v.x, v.y);
+        }
+
+        function addVec(v1, v2) {
+            return new b2Vec2(v1.x + v2.x, v1.y + v2.y);
+        }
+
+        function rotationMatrix(angle) {
+            var cosx = math.cos(angle);
+            var sinx = math.sin(angle);
+            return math.matrix([
+                [cosx, -sinx, 0],
+                [sinx, cosx, 0],
+                [0, 0, 1]
+            ]);
+        }
+
+        function translationMatrix(x, y) {
+            return math.matrix([[1,0,-x],[0,1,-y], [0,0,1]]);
+        }
+
+        function scaleMatrix(s) {
+            return math.matrix([[s,0,0],[0,s,0], [0,0,1]]);
+        }
+
+        function Camera(xCenter, yCenter, angle, zoom) {
+            this.matrix = math.matrix([[1,0,0],
+                                       [0,1,0],
+                                       [0,0,1]]);
+
+            this.zoom = 1;
+            this.angle = 0;
+            this.xCenter = 0;
+            this.yCenter = 0;
+
+            this.rotate = function(angle) {
+                this.matrix = math.multiply(this.matrix, translationMatrix(-this.xCenter, -this.yCenter));
+                this.rotate_around_center(angle);
+                this.matrix = math.multiply(this.matrix, translationMatrix(this.xCenter, this.yCenter));
+            };
+
+            this.rotate_around_center = function(angle) {
+                this.matrix = math.multiply(this.matrix, rotationMatrix(angle));
+                this.angle += angle;
+            };
+
+            this.translate = function(x, y) {
+                this.matrix = math.multiply(this.matrix, translationMatrix(x, y));
+                this.xCenter += x;
+                this.yCenter += y;
+            };
+
+            this.scale = function(s) {
+                this.matrix = math.multiply(this.matrix, scaleMatrix(s));
+                this.zoom *= s;
+            };
+
+            this.apply = function(p) {
+                var affine_p = math.matrix([[p.x], [p.y], [1]]);
+                var result = math.multiply(this.matrix, affine_p);
+                return new b2Vec2(
+                    math.subset(result, math.index(0, 0)) / math.subset(result, math.index(2, 0)),
+                    math.subset(result, math.index(1, 0)) / math.subset(result, math.index(2, 0))
+                );
+            };
+
+            this.rotate_around_center(angle);
+            this.scale(zoom);
+            this.translate(xCenter, yCenter);
+        }
+
+        function gravityForCameraAngle(angle) {
+            var magnitude = 10;
+            return new b2Vec2(magnitude * math.sin(angle), magnitude * math.cos(angle));
+        }
+
+        function vectorDist(v1, v2) {
+            var x_dist = (v1.x - v2.x);
+            var y_dist = (v1.y - v2.y);
+            return math.sqrt(x_dist*x_dist + y_dist*y_dist);
+        }
+
+        function clipMaxSpeed(v) {
+            var lenBefore = vectorDist(new b2Vec2(0,0), v);
+
+            if (lenBefore > MAX_SPEED) {
+                var ratio = MAX_SPEED/lenBefore;
+                return new b2Vec2(v.x * ratio, v.y * ratio);
+            } else {
+                return v;
+            }
+        }
+
+        function Target(color, position, player) {
+            this.color = color;
+            this.position = position;
+            this.player = player;
+
+            this.isActive = function() {
+                return vectorDist(this.player.m_xf.position, this.position) <
+                    (TARGET_SIZE + this.player.m_fixtureList.m_shape.m_radius);
+            }
+        }
+
+        function Game() {
+            this.camera = new Camera(0,0,0,30);
+
+            // Box2D state
+            this.resetWorld = function() {
+                this.bodies = [];
+                this.world = new b2World(gravityForCameraAngle(this.camera.angle), false);
+
+                this.playerBodies = [];
+            };
+
+            this.addPlayerBody = function(radius, friction, restitution, color, xpos, ypos) {
+                var playerBodyDef = new b2BodyDef();
+                playerBodyDef.type = b2Body.b2_dynamicBody;
+                playerBodyDef.position.Set(xpos, ypos);
+                var playerFixtureDef = new b2FixtureDef();
+                playerFixtureDef.density = 1.0;
+                playerFixtureDef.friction = friction;
+                playerFixtureDef.restitution = restitution;
+                playerFixtureDef.shape = new b2CircleShape(radius);
+
+                var playerBody = this.world.CreateBody(playerBodyDef);
+                playerBody.CreateFixture(playerFixtureDef);
+
+                playerBody.color = color;
+
+                this.playerBodies.push(playerBody);
+                this.bodies.push(playerBody);
+
+                return playerBody;
+            };
+
+            this.addStaticBody = function(vertices, friction, restitution) {
+                var bodyDef = new b2BodyDef();
+                bodyDef.type = b2Body.b2_staticBody;
+                bodyDef.position.Set(0, 0);
+                var fixtureDef = new b2FixtureDef();
+                fixtureDef.friction = friction;
+                fixtureDef.restitution = restitution;
+                fixtureDef.shape = new b2PolygonShape();
+
+                fixtureDef.shape.SetAsArray(vertices, vertices.length);
+
+                var body = this.world.CreateBody(bodyDef);
+                body.color = "#661166";
+                body.CreateFixture(fixtureDef);
+
+                this.bodies.push(body);
+            };
+
+            this.addStaticBox = function(xStart, yStart, xEnd, yEnd, friction, restitution) {
+                this.addStaticBody(
+                    [new b2Vec2(xStart,yStart), new b2Vec2(xStart,yEnd), new b2Vec2(xEnd, yEnd), new b2Vec2(xEnd, yStart)],
+                    friction, restitution
+                );
+            };
+
+
+            // Input state
+            this.keys = {};
+            this.render = function(canvas) {
+                var context = canvas.getContext('2d');
+                context.clearRect(0, 0, canvas.width, canvas.height);
+
+                function centerPos(v) {
+                    return new b2Vec2(canvas.width/2 + v.x, canvas.height/2 + v.y);
+                }
+
+                for (var i = 0; i < this.targets.length; ++i) {
+                    // Show the target in the world
+                    var target = this.targets[i];
+
+                    var radius = this.camera.zoom * TARGET_SIZE;
+
+                    var position = centerPos(this.camera.apply(target.position));
+
+                    context.beginPath();
+                    context.arc(position.x, position.y, radius, 0, 2 * Math.PI, false);
+                    context.fillStyle = target.color;
+                    context.fill();
+                    context.lineWidth = 2;
+                    context.strokeStyle = '#003300';
+                    context.stroke();
+                }
+
+                for (var i = 0; i < this.bodies.length; ++i) {
+                    var b = this.bodies[i];
+                    var fixture = b.m_fixtureList;
+                    while (fixture != null) {
+                        var shape = fixture.m_shape;
+
+                        if (shape instanceof b2CircleShape) {
+                            var radius = this.camera.zoom * shape.m_radius;
+
+                            var position = addVec(shape.m_p, b.m_xf.position);
+                            position = centerPos(this.camera.apply(position));
+
+                            context.beginPath();
+                            context.arc(position.x, position.y, radius, 0, 2 * Math.PI, false);
+                            context.fillStyle = b.color;
+                            context.fill();
+                            context.lineWidth = 2;
+                            context.strokeStyle = '#003300';
+                            context.stroke();
+                        } else if (shape instanceof b2PolygonShape) {
+                            context.beginPath();
+                            for (var j = 0; j < shape.m_vertices.length; ++j) {
+                                var vertex = addVec(b.m_xf.position, shape.m_vertices[j]);
+                                vertex = centerPos(this.camera.apply(vertex));
+                                if (j == 0) {
+                                    context.moveTo(vertex.x, vertex.y);
+                                } else {
+                                    context.lineTo(vertex.x, vertex.y);
+                                }
+                            }
+                            context.closePath();
+                            context.fillStyle = b.color;
+                            context.fill();
+                            context.lineWidth = 2;
+                            context.strokeStyle = '#003300';
+                            context.stroke();
+                        } else {
+                            // We don't know how to show other stuff
+                            console.log("Don't know how to render.", shape);
+                        }
+
+                        fixture = fixture.m_next;
+                    }
+                }
+
+                for (var i = 0; i < this.targets.length; ++i) {
+                    var indicatorSize = 25;
+                    // Show targets GUI
+                    var target = this.targets[i];
+
+                    var position = new b2Vec2((canvas.width / this.targets.length)*(i+0.5), indicatorSize * 1.2);
+
+                    context.beginPath();
+                    context.arc(position.x, position.y, indicatorSize, 0, 2 * Math.PI, false);
+
+                    context.lineWidth = 4;
+                    context.strokeStyle = target.color;
+                    context.stroke();
+
+                    if (target.isActive()) {
+                        context.fillStyle = target.color;
+                        context.fill();
+                    }
+                }
+            };
+
+            this.handleInputUpdate = function() {
+                if (this.keys[0x57]) {
+                    this.camera.translate(0, -MOVE_SPEED/this.camera.zoom);
+                } // W key
+                if (this.keys[0x53]) {
+                    this.camera.translate(0, MOVE_SPEED/this.camera.zoom);
+                } // S key
+                if (this.keys[0x41]) {
+                    this.camera.translate(-MOVE_SPEED/this.camera.zoom, 0);
+                } // A key
+                if (this.keys[0x44]) {
+                    this.camera.translate(MOVE_SPEED/this.camera.zoom, 0);
+                } // D key
+                if (this.keys[0x51]) {
+                    this.camera.rotate(-ROTATE_SPEED);
+                    this.world.SetGravity(gravityForCameraAngle(this.camera.angle));
+                } // Q key
+                if (this.keys[0x45]) {
+                    this.camera.rotate(ROTATE_SPEED);
+                    this.world.SetGravity(gravityForCameraAngle(this.camera.angle));
+                } // W key
+                if (this.keys[0x52]) {
+                    this.camera.scale(SCALE_SPEED);
+                } // R key
+                if (this.keys[0x46]) {
+                    this.camera.scale(1/SCALE_SPEED);
+                } // F key
+            };
+
+            this.handleGameUpdate = function(canvas) {
+                this.world.Step(1 / FPS, 10, 10);
+                this.world.ClearForces();
+
+                for (var i = 0; i < this.playerBodies.length; ++i) {
+                    var p = this.playerBodies[i];
+                    p.m_linearVelocity = clipMaxSpeed(p.m_linearVelocity);
+                }
+
+                var areAllTargetsActive = true;
+                for (var i = 0; i < this.targets.length; ++i) {
+                    var target = this.targets[i];
+                    if (!target.isActive()) {
+                        areAllTargetsActive = false;
+                        break;
+                    }
+                }
+
+                if (areAllTargetsActive) {
+                    this.render(canvas);
+                    alert("You won!");
+                    this.setUpLevel1();
+                }
+            };
+
+            this.setUpLevel1 = function () {
+                this.resetWorld();
+
+                this.camera = new Camera(4,4,0,40);
+                this.world.SetGravity(gravityForCameraAngle(this.camera.angle));
+
+                // Border
+                this.addStaticBody(
+                    [new b2Vec2(-1,-1), new b2Vec2(9,-1), new b2Vec2(9, 0), new b2Vec2(-1, 0)],
+                    0.8, 0.5
+                );
+                this.addStaticBody(
+                    [new b2Vec2(-1,7), new b2Vec2(9,7), new b2Vec2(9, 8), new b2Vec2(-1, 8)],
+                    0.8, 0.5
+                );
+                this.addStaticBody(
+                    [new b2Vec2(-1,0), new b2Vec2(0,0), new b2Vec2(0, 7), new b2Vec2(-1, 7)],
+                    0.8, 0.5
+                );
+                this.addStaticBody(
+                    [new b2Vec2(8,0), new b2Vec2(9,0), new b2Vec2(9, 7), new b2Vec2(8, 7)],
+                    0.8, 0.5
+                );
+
+                // stuffs
+                this.addStaticBody(
+                    [new b2Vec2(2,0), new b2Vec2(6,0), new b2Vec2(6, 2), new b2Vec2(2, 2)],
+                    0.2, 0.5
+                );
+
+                this.addStaticBody(
+                    [new b2Vec2(1,3), new b2Vec2(2,3), new b2Vec2(2,4), new b2Vec2(1,4)], 0.8, 0.5
+                );
+                this.addStaticBody(
+                    [new b2Vec2(3,3), new b2Vec2(6,3), new b2Vec2(6,4), new b2Vec2(3,4)], 0.8, 0.5
+                );
+                this.addStaticBody(
+                    [new b2Vec2(7,3), new b2Vec2(8,3), new b2Vec2(8,4), new b2Vec2(7,4)], 0.8, 0.5
+                );
+
+
+                this.addStaticBody(
+                    [new b2Vec2(0,5), new b2Vec2(2,5), new b2Vec2(2,6), new b2Vec2(0,6)], 0.8, 0.5
+                );
+                this.addStaticBody(
+                    [new b2Vec2(3,5), new b2Vec2(4,5), new b2Vec2(4,6), new b2Vec2(3,6)], 0.8, 0.5
+                );
+                this.addStaticBody(
+                    [new b2Vec2(5,5), new b2Vec2(7,5), new b2Vec2(7,6), new b2Vec2(5,6)], 0.8, 0.5
+                );
+
+
+                // Players and targets
+                var blueBall = this.addPlayerBody(0.48, 0.5, 0.5, "blue", 0.6,6.5);
+                var redBall = this.addPlayerBody(0.48, 0.5, 0.5, "red", 7.4,6.5);
+
+                this.targets = [
+                    new Target("#FFAAAA", new b2Vec2(0.5, 0.5), redBall),
+                    new Target("#AAAAFF", new b2Vec2(7.5, 0.5), blueBall)
+                ];
+            };
+
+            this.setUpLevel2 = function () {
+                this.resetWorld();
+
+                this.camera = new Camera(4,4,0,40);
+                this.world.SetGravity(gravityForCameraAngle(this.camera.angle));
+
+                // Border
+                this.addStaticBody(
+                    [new b2Vec2(-1,-1), new b2Vec2(11,-1), new b2Vec2(11, 0), new b2Vec2(-1, 0)],
+                    0.8, 0.5
+                );
+                this.addStaticBody(
+                    [new b2Vec2(-1,9), new b2Vec2(11,9), new b2Vec2(11, 10), new b2Vec2(-1, 10)],
+                    0.8, 0.5
+                );
+                this.addStaticBody(
+                    [new b2Vec2(-1,0), new b2Vec2(0,0), new b2Vec2(0, 10), new b2Vec2(-1, 10)],
+                    0.8, 0.5
+                );
+                this.addStaticBody(
+                    [new b2Vec2(10,0), new b2Vec2(11,0), new b2Vec2(11, 9), new b2Vec2(10, 9)],
+                    0.8, 0.5
+                );
+
+                // stuffs
+                this.addStaticBox(
+                    3,0,10,2,
+                    0.8, 0.5
+                );
+                this.addStaticBox(
+                    8,2,10,4,
+                    0.8, 0.5
+                );
+                this.addStaticBox(
+                    9,4,10,9,
+                    0.8, 0.5
+                );
+                this.addStaticBox(
+                    1,1,2,4,
+                    0.8, 0.5
+                );
+                this.addStaticBox(
+                    2,3,8,4,
+                    0.8, 0.5
+                );
+                this.addStaticBox(
+                    2,4,3,6,
+                    0.8, 0.5
+                );
+                this.addStaticBox(
+                    1,5,2,8,
+                    0.8, 0.5
+                );
+                this.addStaticBox(
+                    2,7,7,8,
+                    0.8, 0.5
+                );
+                this.addStaticBox(
+                    2,7,8,8,
+                    0.8, 0.5
+                );
+                this.addStaticBox(
+                    5,4,6,7,
+                    0.8, 0.5
+                );
+                this.addStaticBox(
+                    7,5,9,6,
+                    0.8, 0.5
+                );
+                this.addStaticBox(
+                    8,6,9,8,
+                    0.8, 0.5
+                );
+
+                // Players and targets
+                var blueBall = this.addPlayerBody(0.48, 0.5, 0.5, "blue", 2.5,6.5);
+                var redBall = this.addPlayerBody(0.48, 0.5, 0.5, "red", 0.5,8.5);
+                var greenBall = this.addPlayerBody(0.48, 0.5, 0.5, "green", 8.5,4.5);
+                var yellowBall = this.addPlayerBody(0.48, 0.5, 0.5, "yellow", 1.5,4.5);
+
+                this.targets = [
+                    new Target("#FFAAAA", new b2Vec2(7.5, 2.5), redBall),
+                    new Target("#AAAAFF", new b2Vec2(4.5, 6.5), blueBall),
+                    new Target("#AAFFAA", new b2Vec2(7.5, 6.5), greenBall),
+                    new Target("#FFFFAA", new b2Vec2(2.5, 2.5), yellowBall)
+                ];
+            };
+
+
+            this.setUpLevel1();
+        }
+        function setUpInput(game) {
+            window.onkeydown = function(e) {
+                game.keys[e.keyCode] = true;
+            };
+            window.onkeyup = function(e) {
+                game.keys[e.keyCode] = false;
+            }
+        }
+
+        function startGame(canvas) {
+            var g = new Game();
+            setUpInput(g);
+
+            setInterval(function() {
+                g.handleInputUpdate();
+                g.handleGameUpdate(canvas);
+                g.render(canvas);
+            }, 1000/FPS);
+        }
+    </script>
+</head>
+<body>
+<canvas id="game" width=800 height=600></canvas>
+
+<script>
+    var cvas = document.getElementById('game');
+    startGame(cvas);
+</script>
+</body>
+</html>
