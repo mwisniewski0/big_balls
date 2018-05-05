@@ -309,6 +309,10 @@
             };
 
             this.handleGameUpdate = function(canvas) {
+                if (this.keys[0x50]) { // P key
+                    // pause
+                    return;
+                }
                 this.world.Step(1 / FPS, 10, 10);
                 this.world.ClearForces();
 
