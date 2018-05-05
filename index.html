@@ -180,7 +180,7 @@
 
             this.addStaticBox = function(xStart, yStart, xEnd, yEnd, friction, restitution) {
                 this.addStaticBody(
-                    [new b2Vec2(xStart,yStart), new b2Vec2(xEnd,yStart), new b2Vec2(xEnd, yEnd), new b2Vec2(xStart, yStart)],
+                    [new b2Vec2(xStart,yStart), new b2Vec2(xEnd,yStart), new b2Vec2(xEnd, yEnd), new b2Vec2(xStart, yEnd)],
                     friction, restitution
                 );
             };
